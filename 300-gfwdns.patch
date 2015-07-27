@@ -1,0 +1,283 @@
+Index: dnsmasq-2.73/src/dnsmasq.h
+===================================================================
+--- dnsmasq-2.73.orig/src/dnsmasq.h	2015-06-12 16:39:11.000000000 -0400
++++ dnsmasq-2.73/src/dnsmasq.h	2015-07-26 18:17:59.186990000 -0400
+@@ -916,6 +916,17 @@
+   struct dhcp_relay *current, *next;
+ };
+ 
++struct gfwdns_addrv4 {
++	struct in_addr addr;
++	u16 port;
++	struct gfwdns_addrv4 *next;
++};
++
++struct gfwdns_region {
++	char region[4];
++	struct gfwdns_region *next;
++};
++
+ extern struct daemon {
+   /* datastuctures representing the command-line and 
+      config file arguments. All set (including defaults)
+@@ -1056,6 +1067,9 @@
+   char *addrbuff;
+   char *addrbuff2; /* only allocated when OPT_EXTRALOG */
+ 
++  /* gfwdns items*/
++  struct gfwdns_addrv4 *gfwdns_whitedns, *gfwdns_blackdns;
++  struct gfwdns_region *gfwdns_whiteregion, *gfwdns_blackregion;
+ } *daemon;
+ 
+ /* cache.c */
+Index: dnsmasq-2.73/src/forward.c
+===================================================================
+--- dnsmasq-2.73.orig/src/forward.c	2015-06-12 16:39:11.000000000 -0400
++++ dnsmasq-2.73/src/forward.c	2015-07-26 18:17:59.186990000 -0400
+@@ -703,6 +703,7 @@
+   ssize_t n = recvfrom(fd, daemon->packet, daemon->packet_buff_sz, 0, &serveraddr.sa, &addrlen);
+   size_t nn;
+   struct server *server;
++  struct gfwdns_addrv4 *gfwdns_addrv4;
+   void *hash;
+ #ifndef HAVE_DNSSEC
+   unsigned int crc;
+@@ -732,6 +733,22 @@
+   if (!server)
+     return;
+   
++  /* gfw check */
++  if (daemon->gfwdns_whitedns)
++  {
++	for (gfwdns_addrv4 = daemon->gfwdns_whitedns; gfwdns_addrv4; gfwdns_addrv4 = gfwdns_addrv4->next)
++	  if (!((gfwdns_addrv4->addr.s_addr == serveraddr.in.sin_addr.s_addr) && (gfwdns_addrv4->port == serveraddr.in.sin_port)))
++		if (gfwdns_check_for_untrusted_address(header, n))
++		  return;
++  }
++  else if (daemon->gfwdns_blackdns)
++  {
++	for (gfwdns_addrv4 = daemon->gfwdns_blackdns; gfwdns_addrv4; gfwdns_addrv4 = gfwdns_addrv4->next)
++	  if ((gfwdns_addrv4->addr.s_addr == serveraddr.in.sin_addr.s_addr) && (gfwdns_addrv4->port == serveraddr.in.sin_port))
++		if (gfwdns_check_for_untrusted_address(header, n))
++		  return;
++  }
++
+ #ifdef HAVE_DNSSEC
+   hash = hash_questions(header, n, daemon->namebuff);
+ #else
+Index: dnsmasq-2.73/src/mod_geoip.c
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ dnsmasq-2.73/src/mod_geoip.c	2015-07-26 18:17:59.186990000 -0400
+@@ -0,0 +1,48 @@
++#include "mod_geoip.h"
++#include <stdio.h>
++#include <GeoIP.h>
++
++/* geoip */
++static GeoIP * gi;
++char initialized = 0;
++
++/* if we're built against a version of geoip-api-c that doesn't define this,
++ * the flag should be harmless (as long as it doesn't clash with another
++ * flag using the same bit position). */
++#ifndef GEOIP_SILENCE
++#define GEOIP_SILENCE		16
++#endif
++
++int gi_init()
++{
++	if(initialized)
++		return 0;
++
++    /* Init GeoIP */
++    _GeoIP_setup_dbfilename();
++    if(!GeoIP_db_avail(GEOIP_COUNTRY_EDITION))
++    {
++        printf("\nGeoIP_db_avail Error.\n");
++        return -1;
++    }
++    gi = GeoIP_open_type(GEOIP_COUNTRY_EDITION, GEOIP_STANDARD | GEOIP_SILENCE);
++    if (NULL == gi) {
++        printf("\nGeoIP_open_type Error.\n");
++        return -1;
++    }
++    gi->charset = GEOIP_CHARSET_UTF8;
++
++    initialized = 1;
++    return 0;
++}
++
++int gi_ip_in_country(struct in_addr * addr, const char * countrycode)
++{
++	if(gi_init() != 0)
++		return -1;
++
++    if(GeoIP_id_by_code(countrycode) == GeoIP_id_by_ipnum(gi, ntohl(addr->s_addr)))
++    	return 0;
++
++    return 1;
++}
+Index: dnsmasq-2.73/src/mod_geoip.h
+===================================================================
+--- /dev/null	1970-01-01 00:00:00.000000000 +0000
++++ dnsmasq-2.73/src/mod_geoip.h	2015-07-26 18:17:59.186990000 -0400
+@@ -0,0 +1,15 @@
++/*
++ * mod_geoip.h
++ *
++ *  Created on: Jul 16, 2015
++ *      Author: root
++ */
++
++#ifndef SRC_MOD_GEOIP_H_
++#define SRC_MOD_GEOIP_H_
++
++#include <netinet/in.h>
++
++int gi_ip_in_country(struct in_addr * addr, const char * countrycode);
++
++#endif /* SRC_MOD_GEOIP_H_ */
+Index: dnsmasq-2.73/src/option.c
+===================================================================
+--- dnsmasq-2.73.orig/src/option.c	2015-06-12 16:39:11.000000000 -0400
++++ dnsmasq-2.73/src/option.c	2015-07-26 18:17:59.186990000 -0400
+@@ -154,6 +154,10 @@
+ #define LOPT_HOST_INOTIFY  342
+ #define LOPT_DNSSEC_STAMP  343
+ #define LOPT_TFTP_NO_FAIL  344
++#define GFWDNS_LOPT_WHITEDNS	500
++#define GFWDNS_LOPT_BLACKDNS	501
++#define GFWDNS_LOPT_WHITEREGION	502
++#define GFWDNS_LOPT_BLACKREGION	503
+ 
+ #ifdef HAVE_GETOPT_LONG
+ static const struct option opts[] =  
+@@ -313,6 +317,10 @@
+     { "quiet-dhcp6", 0, 0, LOPT_QUIET_DHCP6 },
+     { "quiet-ra", 0, 0, LOPT_QUIET_RA },
+     { "dns-loop-detect", 0, 0, LOPT_LOOP_DETECT },
++	{ "gfwdns-dns-white", 1, 0, GFWDNS_LOPT_WHITEDNS },
++	{ "gfwdns-dns-black", 1, 0, GFWDNS_LOPT_BLACKDNS },
++	{ "gfwdns-region-white", 1, 0, GFWDNS_LOPT_WHITEREGION },
++	{ "gfwdns-region-black", 1, 0, GFWDNS_LOPT_BLACKREGION },
+     { NULL, 0, 0, 0 }
+   };
+ 
+@@ -2180,6 +2188,32 @@
+ 	break;	
+       }
+       
++    case GFWDNS_LOPT_WHITEDNS:  /* --gfwdns-dns-white */
++    case GFWDNS_LOPT_BLACKDNS: /* --gfwdns-dns-black */
++     {
++	struct in_addr addr;
++	unhide_metas(arg);
++	if (arg && (inet_pton(AF_INET, arg, &addr) > 0))
++	  {
++	    struct gfwdns_addrv4 *gd_addr = opt_malloc(sizeof(struct gfwdns_addrv4));
++	    if (option == GFWDNS_LOPT_WHITEDNS)
++	      {
++		gd_addr->next = daemon->gfwdns_whitedns;
++		daemon->gfwdns_whitedns = gd_addr;
++	      }
++	    else
++	      {
++		gd_addr->next = daemon->gfwdns_blackdns;
++		daemon->gfwdns_blackdns = gd_addr;
++	      }
++	    gd_addr->addr = addr;
++	    gd_addr->port = 13568;
++	  }
++	else
++	  ret_err(gen_err); /* error */
++	break;
++      }
++
+     case 'a':  /* --listen-address */
+     case LOPT_AUTHPEER: /* --auth-peer */
+       do {
+Index: dnsmasq-2.73/src/rfc1035.c
+===================================================================
+--- dnsmasq-2.73.orig/src/rfc1035.c	2015-06-12 16:39:11.000000000 -0400
++++ dnsmasq-2.73/src/rfc1035.c	2015-07-26 18:17:59.186990000 -0400
+@@ -16,6 +16,8 @@
+ 
+ #include "dnsmasq.h"
+ 
++#include "mod_geoip.h"
++
+ int extract_name(struct dns_header *header, size_t plen, unsigned char **pp, 
+ 		 char *name, int isExtract, int extrabytes)
+ {
+@@ -1325,6 +1327,43 @@
+   return 0;
+ }
+ 
++int gfwdns_check_for_untrusted_address(struct dns_header *header, size_t qlen)
++{
++  unsigned char *p;
++  int i, qtype, qclass, rdlen;
++  struct in_addr addr;
++
++  /* skip over questions */
++  if (!(p = skip_questions(header, qlen)))
++    return 0; /* bad packet */
++
++  for (i = ntohs(header->ancount); i != 0; i--)
++    {
++      if (!(p = skip_name(p, header, qlen, 10)))
++	return 0; /* bad packet */
++
++      GETSHORT(qtype, p);
++      GETSHORT(qclass, p);
++      p += 4; /* TTL */
++      GETSHORT(rdlen, p);
++
++      if (qclass == C_IN && qtype == T_A)
++	{
++	  if (!CHECK_LEN(header, p, qlen, INADDRSZ))
++	    return 0;
++
++	  memcpy(&addr.s_addr, p, INADDRSZ);
++	  if (gi_ip_in_country(&addr, "CN") != 0)
++	    return 1;
++	}
++
++      if (!ADD_RDLEN(header, p, qlen, rdlen))
++	return 0;
++    }
++
++  return 0;
++}
++
+ int check_for_ignored_address(struct dns_header *header, size_t qlen, struct bogus_addr *baddr)
+ {
+   unsigned char *p;
+Index: dnsmasq-2.73/Makefile
+===================================================================
+--- dnsmasq-2.73.orig/Makefile	2015-06-12 16:39:11.000000000 -0400
++++ dnsmasq-2.73/Makefile	2015-07-26 18:19:01.410990000 -0400
+@@ -28,7 +28,7 @@
+ LDFLAGS       = 
+ COPTS         = 
+ RPM_OPT_FLAGS = 
+-LIBS          = 
++LIBS          = -lGeoIP
+ 
+ #################################################################
+ 
+@@ -73,10 +73,11 @@
+        dnsmasq.o dhcp.o lease.o rfc2131.o netlink.o dbus.o bpf.o \
+        helper.o tftp.o log.o conntrack.o dhcp6.o rfc3315.o \
+        dhcp-common.o outpacket.o radv.o slaac.o auth.o ipset.o \
+-       domain.o dnssec.o blockdata.o tables.o loop.o inotify.o
++       domain.o dnssec.o blockdata.o tables.o loop.o inotify.o \
++       mod_geoip.o
+ 
+ hdrs = dnsmasq.h config.h dhcp-protocol.h dhcp6-protocol.h \
+-       dns-protocol.h radv-protocol.h ip6addr.h
++       dns-protocol.h radv-protocol.h ip6addr.h mod_geoip.h
+ 
+ all : $(BUILDDIR)
+ 	@cd $(BUILDDIR) && $(MAKE) \
