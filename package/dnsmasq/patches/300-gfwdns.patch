@@ -1,7 +1,7 @@
 Index: dnsmasq-2.73/src/dnsmasq.h
 ===================================================================
 --- dnsmasq-2.73.orig/src/dnsmasq.h	2015-06-12 16:39:11.000000000 -0400
-+++ dnsmasq-2.73/src/dnsmasq.h	2015-07-26 18:17:59.186990000 -0400
++++ dnsmasq-2.73/src/dnsmasq.h	2015-07-28 16:51:08.630765336 -0400
 @@ -916,6 +916,17 @@
    struct dhcp_relay *current, *next;
  };
@@ -33,7 +33,7 @@ Index: dnsmasq-2.73/src/dnsmasq.h
 Index: dnsmasq-2.73/src/forward.c
 ===================================================================
 --- dnsmasq-2.73.orig/src/forward.c	2015-06-12 16:39:11.000000000 -0400
-+++ dnsmasq-2.73/src/forward.c	2015-07-26 18:17:59.186990000 -0400
++++ dnsmasq-2.73/src/forward.c	2015-07-28 16:51:08.630765336 -0400
 @@ -703,6 +703,7 @@
    ssize_t n = recvfrom(fd, daemon->packet, daemon->packet_buff_sz, 0, &serveraddr.sa, &addrlen);
    size_t nn;
@@ -42,7 +42,7 @@ Index: dnsmasq-2.73/src/forward.c
    void *hash;
  #ifndef HAVE_DNSSEC
    unsigned int crc;
-@@ -732,6 +733,22 @@
+@@ -732,6 +733,30 @@
    if (!server)
      return;
    
@@ -51,15 +51,23 @@ Index: dnsmasq-2.73/src/forward.c
 +  {
 +	for (gfwdns_addrv4 = daemon->gfwdns_whitedns; gfwdns_addrv4; gfwdns_addrv4 = gfwdns_addrv4->next)
 +	  if (!((gfwdns_addrv4->addr.s_addr == serveraddr.in.sin_addr.s_addr) && (gfwdns_addrv4->port == serveraddr.in.sin_port)))
++	  {
++		if(option_bool(OPT_LOG))
++		  my_syslog(LOG_INFO, _("GeoIP_Addr DNS %s not in whitelist, check it %08x"), inet_ntoa(serveraddr.in.sin_addr));
 +		if (gfwdns_check_for_untrusted_address(header, n))
 +		  return;
++	  }
 +  }
 +  else if (daemon->gfwdns_blackdns)
 +  {
 +	for (gfwdns_addrv4 = daemon->gfwdns_blackdns; gfwdns_addrv4; gfwdns_addrv4 = gfwdns_addrv4->next)
 +	  if ((gfwdns_addrv4->addr.s_addr == serveraddr.in.sin_addr.s_addr) && (gfwdns_addrv4->port == serveraddr.in.sin_port))
++	  {
++		if(option_bool(OPT_LOG))
++		  my_syslog(LOG_INFO, _("GeoIP_Addr DNS %s in blacklist, check it"), inet_ntoa(serveraddr.in.sin_addr));
 +		if (gfwdns_check_for_untrusted_address(header, n))
 +		  return;
++	  }
 +  }
 +
  #ifdef HAVE_DNSSEC
@@ -68,10 +76,10 @@ Index: dnsmasq-2.73/src/forward.c
 Index: dnsmasq-2.73/src/mod_geoip.c
 ===================================================================
 --- /dev/null	1970-01-01 00:00:00.000000000 +0000
-+++ dnsmasq-2.73/src/mod_geoip.c	2015-07-26 18:17:59.186990000 -0400
-@@ -0,0 +1,48 @@
++++ dnsmasq-2.73/src/mod_geoip.c	2015-07-28 16:51:08.634765336 -0400
+@@ -0,0 +1,51 @@
 +#include "mod_geoip.h"
-+#include <stdio.h>
++#include "dnsmasq.h"
 +#include <GeoIP.h>
 +
 +/* geoip */
@@ -94,12 +102,12 @@ Index: dnsmasq-2.73/src/mod_geoip.c
 +    _GeoIP_setup_dbfilename();
 +    if(!GeoIP_db_avail(GEOIP_COUNTRY_EDITION))
 +    {
-+        printf("\nGeoIP_db_avail Error.\n");
++    	my_syslog(LOG_ERR, _("GeoIP_db_avail Error"));
 +        return -1;
 +    }
 +    gi = GeoIP_open_type(GEOIP_COUNTRY_EDITION, GEOIP_STANDARD | GEOIP_SILENCE);
 +    if (NULL == gi) {
-+        printf("\nGeoIP_open_type Error.\n");
++    	my_syslog(LOG_ERR, _("GeoIP_open_type Error"));
 +        return -1;
 +    }
 +    gi->charset = GEOIP_CHARSET_UTF8;
@@ -113,6 +121,9 @@ Index: dnsmasq-2.73/src/mod_geoip.c
 +	if(gi_init() != 0)
 +		return -1;
 +
++	if(option_bool(OPT_LOG))
++		my_syslog(LOG_INFO, _("GeoIP_Addr Check address %s"), inet_ntoa(*addr));
++
 +    if(GeoIP_id_by_code(countrycode) == GeoIP_id_by_ipnum(gi, ntohl(addr->s_addr)))
 +    	return 0;
 +
@@ -121,7 +132,7 @@ Index: dnsmasq-2.73/src/mod_geoip.c
 Index: dnsmasq-2.73/src/mod_geoip.h
 ===================================================================
 --- /dev/null	1970-01-01 00:00:00.000000000 +0000
-+++ dnsmasq-2.73/src/mod_geoip.h	2015-07-26 18:17:59.186990000 -0400
++++ dnsmasq-2.73/src/mod_geoip.h	2015-07-28 16:51:08.634765336 -0400
 @@ -0,0 +1,15 @@
 +/*
 + * mod_geoip.h
@@ -141,7 +152,7 @@ Index: dnsmasq-2.73/src/mod_geoip.h
 Index: dnsmasq-2.73/src/option.c
 ===================================================================
 --- dnsmasq-2.73.orig/src/option.c	2015-06-12 16:39:11.000000000 -0400
-+++ dnsmasq-2.73/src/option.c	2015-07-26 18:17:59.186990000 -0400
++++ dnsmasq-2.73/src/option.c	2015-08-06 13:37:35.623785636 -0400
 @@ -154,6 +154,10 @@
  #define LOPT_HOST_INOTIFY  342
  #define LOPT_DNSSEC_STAMP  343
@@ -164,7 +175,7 @@ Index: dnsmasq-2.73/src/option.c
      { NULL, 0, 0, 0 }
    };
  
-@@ -2180,6 +2188,32 @@
+@@ -2180,6 +2188,41 @@
  	break;	
        }
        
@@ -172,7 +183,15 @@ Index: dnsmasq-2.73/src/option.c
 +    case GFWDNS_LOPT_BLACKDNS: /* --gfwdns-dns-black */
 +     {
 +	struct in_addr addr;
++	char *portno;
++	int serv_port = NAMESERVER_PORT;
++
 +	unhide_metas(arg);
++
++	if ((portno = split_chr(arg, '#')) && /* is there a port no. */
++	  !atoi_check16(portno, &serv_port))
++		ret_err(gen_err); /* error */
++
 +	if (arg && (inet_pton(AF_INET, arg, &addr) > 0))
 +	  {
 +	    struct gfwdns_addrv4 *gd_addr = opt_malloc(sizeof(struct gfwdns_addrv4));
@@ -186,8 +205,9 @@ Index: dnsmasq-2.73/src/option.c
 +		gd_addr->next = daemon->gfwdns_blackdns;
 +		daemon->gfwdns_blackdns = gd_addr;
 +	      }
++
 +	    gd_addr->addr = addr;
-+	    gd_addr->port = 13568;
++	    gd_addr->port = htons(serv_port);
 +	  }
 +	else
 +	  ret_err(gen_err); /* error */
@@ -200,7 +220,7 @@ Index: dnsmasq-2.73/src/option.c
 Index: dnsmasq-2.73/src/rfc1035.c
 ===================================================================
 --- dnsmasq-2.73.orig/src/rfc1035.c	2015-06-12 16:39:11.000000000 -0400
-+++ dnsmasq-2.73/src/rfc1035.c	2015-07-26 18:17:59.186990000 -0400
++++ dnsmasq-2.73/src/rfc1035.c	2015-07-28 16:51:08.634765336 -0400
 @@ -16,6 +16,8 @@
  
  #include "dnsmasq.h"
@@ -210,7 +230,7 @@ Index: dnsmasq-2.73/src/rfc1035.c
  int extract_name(struct dns_header *header, size_t plen, unsigned char **pp, 
  		 char *name, int isExtract, int extrabytes)
  {
-@@ -1325,6 +1327,43 @@
+@@ -1325,6 +1327,47 @@
    return 0;
  }
  
@@ -241,7 +261,11 @@ Index: dnsmasq-2.73/src/rfc1035.c
 +
 +	  memcpy(&addr.s_addr, p, INADDRSZ);
 +	  if (gi_ip_in_country(&addr, "CN") != 0)
++	  {
++		if(option_bool(OPT_LOG))
++		  my_syslog(LOG_INFO, _("GeoIP_Addr Address %s is Blocked"), inet_ntoa(addr));
 +	    return 1;
++	  }
 +	}
 +
 +      if (!ADD_RDLEN(header, p, qlen, rdlen))
@@ -257,7 +281,7 @@ Index: dnsmasq-2.73/src/rfc1035.c
 Index: dnsmasq-2.73/Makefile
 ===================================================================
 --- dnsmasq-2.73.orig/Makefile	2015-06-12 16:39:11.000000000 -0400
-+++ dnsmasq-2.73/Makefile	2015-07-26 18:19:01.410990000 -0400
++++ dnsmasq-2.73/Makefile	2015-07-28 16:51:08.634765336 -0400
 @@ -28,7 +28,7 @@
  LDFLAGS       = 
  COPTS         = 
