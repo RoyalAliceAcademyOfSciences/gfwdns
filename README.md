@@ -16,3 +16,9 @@ gfwdns 可以让您在避免受到 GFW 污染的同时享受墙内 DNS 提供的
 
 #平台
 目前 gfwdns 仅提供在 OpenWrt SDK 环境下的编译文件，如果您愿意并能够让它工作在更多的平台下，欢迎提交补丁。
+
+#编译与使用
+下载后放入 OpenWrt SDK 根目录并执行 make 命令，即可启动编译过程。软件运行过程中需要 GeoIP.dat 文件，请在下载并解压后将其放入"/usr/share/GeoIP/"目录即可。
+```
+wget -N http://geolite.maxmind.com/download/geoip/database/GeoLiteCountry/GeoIP.dat.gz
+```
